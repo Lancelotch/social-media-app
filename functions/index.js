@@ -1,7 +1,11 @@
 const functions = require("firebase-functions");
+const firebase = require("firebase");
 const admin = require("firebase-admin");
-//var serviceAccount = require("../firebase-config.json");
-var serviceAccount = {
+const app = require("express")();
+const isEmpty = require("../helper/isEmpty");
+const isEmail = require("../helper/isEmail");
+
+const serviceAccount = {
   type: "service_account",
   project_id: "social-app-48476",
   private_key_id: "52b2ed950805d1f2b0f128e7cda88c4c1d1cfe6d",
@@ -17,18 +21,25 @@ var serviceAccount = {
     "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-hjz0i%40social-app-48476.iam.gserviceaccount.com"
 };
 
+const firebaseConfig = {
+  apiKey: "AIzaSyDB-ew53GtHz2xHOKdhp6w8rlwNoWBEXp4",
+  authDomain: "social-app-48476.firebaseapp.com",
+  databaseURL: "https://social-app-48476.firebaseio.com",
+  projectId: "social-app-48476",
+  storageBucket: "social-app-48476.appspot.com",
+  messagingSenderId: "266129696693",
+  appId: "1:266129696693:web:e041b99522b56d68"
+};
+firebase.initializeApp(firebaseConfig);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://social-app-48476.firebaseio.com"
 });
 
-const express = require("express");
-const app = express();
+const db = admin.firestore();
 
 app.get("/shout", (request, response) => {
-  admin
-    .firestore()
-    .collection("shout")
+  db.collection("shout")
     .get()
     .then(data => {
       let shouts = [];
@@ -47,25 +58,95 @@ app.get("/shout", (request, response) => {
     });
 });
 
-app.post('/shout', (request, response) => {
-    const payload = {
-      user: request.body.user,
-      voice: request.body.voice,
-      created_at: admin.firestore.Timestamp.fromMillis(new Date())
-    };
-    admin
-      .firestore()
-      .collection("shout")
-      .add(payload)
-      .then(doc => {
-        return response.json({
-          message: `document ${doc.id} created successfully`
-        });
-      })
-      .catch(error => {
-        response.status(500).json({ error: "something went wrong" });
-        console.error(error);
+app.post("/shout", (request, response) => {
+  const payload = {
+    user: request.body.user,
+    voice: request.body.voice,
+    created_at: admin.firestore.Timestamp.fromMillis(new Date())
+  };
+  db.collection("shout")
+    .add(payload)
+    .then(doc => {
+      return response.json({
+        message: `document ${doc.id} created successfully`
       });
-  })
+    })
+    .catch(error => {
+      response.status(500).json({ error: "something went wrong" });
+      console.error(error);
+    });
+});
 
-exports.api = functions.region('asia-northeast1').https.onRequest(app);
+//Signup route
+app.post("/signup", (request, response) => {
+  const newUser = {
+    email: request.body.email,
+    password: request.body.password,
+    confirmPassword: request.body.confirmPassword,
+    username: request.body.username
+  };
+
+  let errors = {};
+  if(isEmpty(newUser.email)){
+    errors.email = "Must not be empty";
+  }else if(!isEmail(newUser.email)){
+    errors.email = "Must be a valid email address";
+  }
+
+  if(isEmpty(newUser.password)){
+    errors.password = "Must not be empty";
+  }
+  if(newUser.password !== newUser.confirmPassword){
+    errors.confirmPassword = "Password must match";
+  }
+  if(isEmpty(newUser.username)){
+    errors.username = "Must not be empty";
+  }
+
+  if(Object.keys(errors).length > 0){
+    return response.status(400).json(errors);
+  }
+  
+
+  let token, userId;
+  db.doc(`/users/${newUser.username}`)
+    .get()
+    .then(doc => {
+      if (doc.exists) {
+        return response
+          .status(400)
+          .json({ message: "this username has already taken" });
+      } else {
+        return firebase
+          .auth()
+          .createUserWithEmailAndPassword(newUser.email, newUser.password);
+      }
+    })
+    .then(data => {
+      userId = data.user.uid;
+      return data.user.getIdToken();
+    })
+    .then(idToken => {
+      token = idToken;
+      const userCredentials = {
+        id: userId,
+        username: newUser.username,
+        email: newUser.email,
+        created_at: admin.firestore.Timestamp.fromMillis(new Date())
+      };
+      return db.doc(`/users/${newUser.username}`).set(userCredentials);
+    })
+    .then(() => {
+      return response.status(200).json({ token });
+    })
+    .catch(error => {
+      console.log(error);
+      if (error.code === "auth/email-already-in-use") {
+        return response.status(400).json({ error: error.email });
+      } else {
+        return response.status(500).json({ error: error });
+      }
+    });
+});
+
+exports.api = functions.region("asia-northeast1").https.onRequest(app);
